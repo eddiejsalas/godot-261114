@@ -390,6 +390,33 @@ Size2i TileSet::get_tile_size() const {
 	return tile_size;
 }
 
+bool TileSet::_uses_custom_lattice() const {
+	return tile_shape == TILE_SHAPE_ISOMETRIC &&
+			tile_layout == TILE_LAYOUT_DIAMOND_DOWN &&
+			tile_offset_axis == TILE_OFFSET_AXIS_HORIZONTAL &&
+			Math::abs(lattice_a.cross(lattice_b)) > CMP_EPSILON;
+}
+
+void TileSet::set_lattice_a(Vector2 p_a) {
+	lattice_a = p_a;
+	terrain_bits_meshes_dirty = true;
+	tile_meshes_dirty = true;
+	emit_changed();
+}
+Vector2 TileSet::get_lattice_a() const {
+	return lattice_a;
+}
+
+void TileSet::set_lattice_b(Vector2 p_b) {
+	lattice_b = p_b;
+	terrain_bits_meshes_dirty = true;
+	tile_meshes_dirty = true;
+	emit_changed();
+}
+Vector2 TileSet::get_lattice_b() const {
+	return lattice_b;
+}
+
 int TileSet::get_next_source_id() const {
 	return next_source_id;
 }
@@ -471,7 +498,8 @@ int TileSet::add_source(Ref<TileSetSource> p_tile_set_source, int p_atlas_source
 
 	int new_source_id = p_atlas_source_id_override >= 0 ? p_atlas_source_id_override : next_source_id;
 	sources[new_source_id] = p_tile_set_source;
-	source_ids.ordered_insert(new_source_id);
+	source_ids.push_back(new_source_id);
+	source_ids.sort();
 	TileSet *old_tileset = p_tile_set_source->get_tile_set();
 	if (old_tileset != this && old_tileset != nullptr) {
 		// If the source is already in a TileSet (might happen when duplicating), remove it from the other TileSet.
@@ -496,6 +524,7 @@ void TileSet::remove_source(int p_source_id) {
 	sources[p_source_id]->set_tile_set(nullptr);
 	sources.erase(p_source_id);
 	source_ids.erase(p_source_id);
+	source_ids.sort();
 
 	terrains_cache_dirty = true;
 	emit_changed();
@@ -524,7 +553,8 @@ void TileSet::set_source_id(int p_source_id, int p_new_source_id) {
 	sources.erase(p_source_id);
 
 	source_ids.erase(p_source_id);
-	source_ids.ordered_insert(p_new_source_id);
+	source_ids.push_back(p_new_source_id);
+	source_ids.sort();
 
 	_compute_next_source_id();
 
@@ -1464,10 +1494,18 @@ Vector<Vector2> TileSet::get_tile_shape_polygon() const {
 		points.push_back(Vector2(0.5, 0.5));
 		points.push_back(Vector2(-0.5, 0.5));
 	} else if (tile_shape == TileSet::TILE_SHAPE_ISOMETRIC) {
-		points.push_back(Vector2(0.0, -0.5));
-		points.push_back(Vector2(-0.5, 0.0));
-		points.push_back(Vector2(0.0, 0.5));
-		points.push_back(Vector2(0.5, 0.0));
+		if (_uses_custom_lattice()) {
+			Vector2 ts(tile_size);
+			points.push_back((-lattice_a - lattice_b) * 0.5 / ts); // Top.
+			points.push_back((-lattice_a + lattice_b) * 0.5 / ts); // Left.
+			points.push_back((lattice_a + lattice_b) * 0.5 / ts); // Bottom.
+			points.push_back((lattice_a - lattice_b) * 0.5 / ts); // Right.
+		} else {
+			points.push_back(Vector2(0.0, -0.5));
+			points.push_back(Vector2(-0.5, 0.0));
+			points.push_back(Vector2(0.0, 0.5));
+			points.push_back(Vector2(0.5, 0.0));
+		}
 	} else {
 		float overlap = 0.0;
 		switch (tile_shape) {
@@ -1542,6 +1580,9 @@ void TileSet::draw_tile_shape(CanvasItem *p_canvas_item, Transform2D p_transform
 }
 
 Vector2 TileSet::map_to_local(const Vector2i &p_pos) const {
+	if (_uses_custom_lattice()) {
+		return lattice_a * p_pos.x + lattice_b * p_pos.y + Vector2(tile_size) * 0.5;
+	}
 	// SHOULD RETURN THE CENTER OF THE CELL.
 	Vector2 ret = p_pos;
 
@@ -1615,6 +1656,11 @@ Vector2 TileSet::map_to_local(const Vector2i &p_pos) const {
 }
 
 Vector2i TileSet::local_to_map(const Vector2 &p_local_position) const {
+	if (_uses_custom_lattice()) {
+		Transform2D lattice(lattice_a, lattice_b, Vector2());
+		Vector2 c = lattice.affine_inverse().basis_xform(p_local_position - Vector2(tile_size) * 0.5);
+		return Vector2i(c.round());
+	}
 	Vector2 ret = p_local_position;
 	ret /= tile_size;
 
@@ -3196,6 +3242,10 @@ Vector<Point2> TileSet::_get_half_offset_side_terrain_peering_bit_polygon(Vector
 }
 
 void TileSet::reset_state() {
+	// Custom lattice.
+	lattice_a = Vector2();
+	lattice_b = Vector2();
+
 	// Rendering
 	occlusion_layers.clear();
 	tile_lines_mesh.instantiate();
@@ -4271,11 +4321,17 @@ void TileSet::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_tile_offset_axis"), &TileSet::get_tile_offset_axis);
 	ClassDB::bind_method(D_METHOD("set_tile_size", "size"), &TileSet::set_tile_size);
 	ClassDB::bind_method(D_METHOD("get_tile_size"), &TileSet::get_tile_size);
+	ClassDB::bind_method(D_METHOD("set_lattice_a", "a"), &TileSet::set_lattice_a);
+	ClassDB::bind_method(D_METHOD("get_lattice_a"), &TileSet::get_lattice_a);
+	ClassDB::bind_method(D_METHOD("set_lattice_b", "b"), &TileSet::set_lattice_b);
+	ClassDB::bind_method(D_METHOD("get_lattice_b"), &TileSet::get_lattice_b);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "tile_shape", PROPERTY_HINT_ENUM, "Square,Isometric,Half-Offset Square,Hexagon"), "set_tile_shape", "get_tile_shape");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "tile_layout", PROPERTY_HINT_ENUM, "Stacked,Stacked Offset,Stairs Right,Stairs Down,Diamond Right,Diamond Down"), "set_tile_layout", "get_tile_layout");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "tile_offset_axis", PROPERTY_HINT_ENUM, "Horizontal Offset,Vertical Offset"), "set_tile_offset_axis", "get_tile_offset_axis");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2I, "tile_size", PROPERTY_HINT_NONE, "suffix:px"), "set_tile_size", "get_tile_size");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "lattice_a", PROPERTY_HINT_NONE, "suffix:px"), "set_lattice_a", "get_lattice_a");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR2, "lattice_b", PROPERTY_HINT_NONE, "suffix:px"), "set_lattice_b", "get_lattice_b");
 
 	// Rendering.
 	ClassDB::bind_method(D_METHOD("set_uv_clipping", "uv_clipping"), &TileSet::set_uv_clipping);
@@ -4815,7 +4871,7 @@ bool TileSetAtlasSource::_set(const StringName &p_name, const Variant &p_value) 
 						tiles[coords].alternatives[alternative_id] = memnew(TileData);
 						tiles[coords].alternatives[alternative_id]->set_tile_set(tile_set);
 						tiles[coords].alternatives[alternative_id]->set_allow_transform(alternative_id > 0);
-						tiles[coords].alternatives_ids.ordered_insert(alternative_id);
+						tiles[coords].alternatives_ids.push_back(alternative_id);
 					}
 					if (components.size() >= 3) {
 						bool valid;
@@ -5007,7 +5063,8 @@ void TileSetAtlasSource::create_tile(const Vector2i p_atlas_coords, const Vector
 
 	// Create and resize the tile.
 	tiles.insert(p_atlas_coords, tad);
-	tiles_ids.ordered_insert(p_atlas_coords);
+	tiles_ids.push_back(p_atlas_coords);
+	tiles_ids.sort();
 
 	_create_coords_mapping_cache(p_atlas_coords);
 	_queue_update_padded_texture();
@@ -5029,6 +5086,7 @@ void TileSetAtlasSource::remove_tile(Vector2i p_atlas_coords) {
 	// Delete the tile
 	tiles.erase(p_atlas_coords);
 	tiles_ids.erase(p_atlas_coords);
+	tiles_ids.sort();
 
 	_queue_update_padded_texture();
 
@@ -5378,7 +5436,8 @@ void TileSetAtlasSource::move_tile_in_atlas(Vector2i p_atlas_coords, Vector2i p_
 		tiles.erase(p_atlas_coords);
 
 		tiles_ids.erase(p_atlas_coords);
-		tiles_ids.ordered_insert(new_atlas_coords);
+		tiles_ids.push_back(new_atlas_coords);
+		tiles_ids.sort();
 	}
 	tiles[new_atlas_coords].size_in_atlas = new_size;
 
@@ -5399,7 +5458,8 @@ int TileSetAtlasSource::create_alternative_tile(const Vector2i p_atlas_coords, i
 	tiles[p_atlas_coords].alternatives[new_alternative_id]->set_allow_transform(true);
 	tiles[p_atlas_coords].alternatives[new_alternative_id]->connect(CoreStringName(changed), callable_mp((Resource *)this, &TileSetAtlasSource::emit_changed));
 	tiles[p_atlas_coords].alternatives[new_alternative_id]->notify_property_list_changed();
-	tiles[p_atlas_coords].alternatives_ids.ordered_insert(new_alternative_id);
+	tiles[p_atlas_coords].alternatives_ids.push_back(new_alternative_id);
+	tiles[p_atlas_coords].alternatives_ids.sort();
 	_compute_next_alternative_id(p_atlas_coords);
 
 	_try_emit_changed();
@@ -5416,6 +5476,7 @@ void TileSetAtlasSource::remove_alternative_tile(const Vector2i p_atlas_coords, 
 	memdelete(tiles[p_atlas_coords].alternatives[p_alternative_tile]);
 	tiles[p_atlas_coords].alternatives.erase(p_alternative_tile);
 	tiles[p_atlas_coords].alternatives_ids.erase(p_alternative_tile);
+	tiles[p_atlas_coords].alternatives_ids.sort();
 
 	_try_emit_changed();
 }
@@ -5429,10 +5490,11 @@ void TileSetAtlasSource::set_alternative_tile_id(const Vector2i p_atlas_coords, 
 	ERR_FAIL_COND_MSG(tiles[p_atlas_coords].alternatives.has(p_new_id), vformat("TileSetAtlasSource has already an alternative with id %d at %s.", p_new_id, String(p_atlas_coords)));
 
 	tiles[p_atlas_coords].alternatives[p_new_id] = tiles[p_atlas_coords].alternatives[p_alternative_tile];
-	tiles[p_atlas_coords].alternatives_ids.ordered_insert(p_new_id);
+	tiles[p_atlas_coords].alternatives_ids.push_back(p_new_id);
 
 	tiles[p_atlas_coords].alternatives.erase(p_alternative_tile);
 	tiles[p_atlas_coords].alternatives_ids.erase(p_alternative_tile);
+	tiles[p_atlas_coords].alternatives_ids.sort();
 
 	_try_emit_changed();
 }
@@ -5787,7 +5849,8 @@ int TileSetScenesCollectionSource::create_scene_tile(Ref<PackedScene> p_packed_s
 	int new_scene_id = p_id_override >= 0 ? p_id_override : next_scene_id;
 
 	scenes[new_scene_id] = SceneData();
-	scenes_ids.ordered_insert(new_scene_id);
+	scenes_ids.push_back(new_scene_id);
+	scenes_ids.sort();
 	set_scene_tile_scene(new_scene_id, p_packed_scene);
 	_compute_next_alternative_id();
 
@@ -5803,7 +5866,8 @@ void TileSetScenesCollectionSource::set_scene_tile_id(int p_id, int p_new_id) {
 
 	scenes[p_new_id] = SceneData();
 	scenes[p_new_id] = scenes[p_id];
-	scenes_ids.ordered_insert(p_new_id);
+	scenes_ids.push_back(p_new_id);
+	scenes_ids.sort();
 
 	_compute_next_alternative_id();
 
