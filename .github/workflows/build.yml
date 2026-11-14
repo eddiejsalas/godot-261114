@@ -1,0 +1,16 @@
+name: Build editor
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install scons
+      - run: scons platform=windows target=editor
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot-windows-editor
+          path: bin/*.exe
