@@ -9,7 +9,7 @@ jobs:
         with:
           python-version: "3.x"
       - run: pip install scons
-      - run: scons platform=windows target=editor
+      - run: scons platform=windows target=editor accesskit=no d3d12=no
       - uses: actions/upload-artifact@v4
         with:
           name: godot-windows-editor
